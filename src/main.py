@@ -20,7 +20,6 @@ import json
 import sys
 from pathlib import Path
 
-# Import our own modules
 from azure_client import (
     get_credential,
     get_security_client,
@@ -63,7 +62,7 @@ def get_subscription_display_name(credential, subscription_id: str) -> str:
         sub = sub_client.subscriptions.get(subscription_id)
         return sub.display_name
     except Exception:
-        return subscription_id  # Fallback to ID if lookup fails
+        return subscription_id
 
 
 def main():
@@ -103,16 +102,14 @@ def main():
         print("  Tip: Run `az login` first to authenticate with Azure CLI.")
         sys.exit(1)
 
-    # Resolve subscription display name
     subscription_name = config.get("subscription_name") or get_subscription_display_name(credential, subscription_id)
 
     print(f"  Connected to: {subscription_name}")
     print("  Running ITGC checks...\n")
 
-    # Initialize SDK clients (one per Azure service area)
-    security_client   = get_security_client(credential, subscription_id)
-    monitor_client    = get_monitor_client(credential, subscription_id)
-    auth_client       = get_authorization_client(credential, subscription_id)
+    security_client = get_security_client(credential, subscription_id)
+    monitor_client  = get_monitor_client(credential, subscription_id)
+    auth_client     = get_authorization_client(credential, subscription_id)
 
     # -----------------------------------------------------------------------
     # 4. Run each ITGC control check
@@ -121,7 +118,7 @@ def main():
         check_defender_for_cloud(security_client, subscription_id),
         check_activity_log_retention(monitor_client, subscription_id),
         check_privileged_access(auth_client, subscription_id),
-        check_security_contacts(security_client, subscription_id),
+        check_security_contacts(credential, subscription_id),  # uses direct REST call
     ]
 
     # -----------------------------------------------------------------------
