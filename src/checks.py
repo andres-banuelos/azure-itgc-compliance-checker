@@ -184,8 +184,10 @@ def check_security_contacts(credential, subscription_id: str) -> dict:
     ITGC-04: Security Contact / Alert Notification
     NIST CSF 2.0: PR.AC-7
 
-    Uses a direct REST call instead of the SDK client to avoid a
-    known deserialization bug in azure-mgmt-security v7 for security contacts.
+    Uses a direct REST call to bypass a known deserialization bug in
+    azure-mgmt-security v7. Handles both response shapes:
+      - Standard ARM envelope: { "value": [ ... ] }
+      - Azure for Students raw list: [ ... ]
 
     Tests whether a security contact email is configured in Defender for Cloud.
     """
@@ -199,37 +201,68 @@ def check_security_contacts(credential, subscription_id: str) -> dict:
     }
 
     try:
-        # Use direct REST call to avoid SDK deserialization bug
         import requests
         token = credential.get_token("https://management.azure.com/.default").token
-        url = f"https://management.azure.com/subscriptions/{subscription_id}/providers/Microsoft.Security/securityContacts?api-version=2020-01-01-preview"
+        url = (
+            f"https://management.azure.com/subscriptions/{subscription_id}"
+            f"/providers/Microsoft.Security/securityContacts"
+            f"?api-version=2020-01-01-preview"
+        )
         headers = {"Authorization": f"Bearer {token}"}
         response = requests.get(url, headers=headers, timeout=30)
 
-        if response.status_code == 200:
-            data = response.json()
-            contacts = data.get("value", [])
-            contacts_with_email = [
-                c for c in contacts
-                if c.get("properties", {}).get("email", "").strip()
-            ]
-
-            if contacts_with_email:
-                email = contacts_with_email[0]["properties"]["email"]
-                control["status"] = "PASS"
-                control["detail"] = f"Security contact configured: {email}."
-                control["risk"] = ""
-            else:
-                control["status"] = "FAIL"
-                control["detail"] = "No security contact with email address found in Defender for Cloud."
-        else:
+        if response.status_code != 200:
             control["status"] = "WARN"
-            control["detail"] = f"Could not retrieve security contacts (HTTP {response.status_code}). Manual verification required."
-            control["risk"] = "Security contact status unverified."
+            control["detail"] = (
+                f"Security contacts API returned HTTP {response.status_code}. "
+                "Manual verification required: Portal > Defender for Cloud > Environment Settings > Email notifications."
+            )
+            control["risk"] = "Security contact status could not be verified programmatically."
+            return control
+
+        data = response.json()
+
+        # Handle both response shapes:
+        # Shape A (standard ARM): {"value": [{...}, ...]}
+        # Shape B (Azure for Students / some tenants): [{...}, ...]
+        if isinstance(data, list):
+            contacts = data
+        elif isinstance(data, dict):
+            contacts = data.get("value", [])
+        else:
+            contacts = []
+
+        # Each contact entry is a dict; extract email from properties
+        contacts_with_email = []
+        for c in contacts:
+            if not isinstance(c, dict):
+                continue
+            props = c.get("properties", {})
+            email = props.get("email", "").strip() if isinstance(props, dict) else ""
+            if email:
+                contacts_with_email.append(email)
+
+        if contacts_with_email:
+            control["status"] = "PASS"
+            control["detail"] = f"Security contact configured: {contacts_with_email[0]}."
+            control["risk"] = ""
+        elif contacts:
+            control["status"] = "WARN"
+            control["detail"] = (
+                f"{len(contacts)} security contact entry found but no email address set. "
+                "Add an email: Portal > Defender for Cloud > Environment Settings > Email notifications."
+            )
+            control["risk"] = "Security alerts may not reach a human responder."
+        else:
+            control["status"] = "FAIL"
+            control["detail"] = (
+                "No security contacts configured in Defender for Cloud. "
+                "Add one: Portal > Defender for Cloud > Environment Settings > Email notifications."
+            )
 
     except Exception as e:
         control["status"] = "ERROR"
-        control["detail"] = f"Unexpected error: {str(e)[:100]}"
+        control["detail"] = f"Unexpected error: {str(e)[:120]}"
         control["risk"] = "Could not verify control status."
 
     return control
