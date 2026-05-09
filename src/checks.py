@@ -17,7 +17,7 @@ Audit note: This consistent structure mirrors how findings are documented
 in workpapers - each check = one testable control objective.
 """
 
-from azure.core.exceptions import HttpResponseError
+from azure.core.exceptions import HttpResponseError, DeserializationError
 
 
 def check_defender_for_cloud(security_client, subscription_id: str) -> dict:
@@ -26,10 +26,7 @@ def check_defender_for_cloud(security_client, subscription_id: str) -> dict:
     NIST CSF 2.0: PR.IP-1
 
     Tests whether Microsoft Defender for Cloud has any paid/standard tier
-    enabled, or falls back to checking if the Security provider is registered.
-
-    In azure-mgmt-security v7+, pricings.list() returns a PricingList object
-    (not a standard iterable). We handle both the new and old SDK shapes.
+    enabled on the subscription.
     """
     control = {
         "control_id": "ITGC-01",
@@ -46,7 +43,6 @@ def check_defender_for_cloud(security_client, subscription_id: str) -> dict:
         )
 
         # SDK v7+ returns a PricingList object with a .value attribute
-        # SDK v5/v6 returns a standard iterable
         if hasattr(result, 'value'):
             pricings = result.value or []
         else:
@@ -71,7 +67,7 @@ def check_defender_for_cloud(security_client, subscription_id: str) -> dict:
             control["detail"] = f"Defender for Cloud is Free tier only across {len(free_plans)} plan(s). No advanced threat detection active."
         else:
             control["status"] = "WARN"
-            control["detail"] = "Microsoft.Security provider registered but no pricing plans found. Defender may not be fully configured."
+            control["detail"] = "Microsoft.Security provider registered but no pricing plans found."
             control["risk"] = "Defender for Cloud configuration unclear. Manual verification recommended."
 
     except HttpResponseError as e:
@@ -79,9 +75,8 @@ def check_defender_for_cloud(security_client, subscription_id: str) -> dict:
         control["detail"] = f"API error: {e.error.code if e.error else str(e)}"
         control["risk"] = "Could not verify control status."
     except TypeError:
-        # Final fallback if result is still not iterable
         control["status"] = "WARN"
-        control["detail"] = "Defender for Cloud API returned unexpected format. Manual verification required in Azure Portal > Defender for Cloud."
+        control["detail"] = "Defender for Cloud API returned unexpected format. Manual verification required."
         control["risk"] = "Could not programmatically verify Defender status."
 
     return control
@@ -94,10 +89,6 @@ def check_activity_log_retention(monitor_client, subscription_id: str) -> dict:
 
     Tests whether activity log alerts are configured to monitor
     critical subscription-level actions.
-
-    Audit context: Without log monitoring, critical actions like privilege
-    escalation go undetected. SOX and SOC 2 require evidence of monitoring
-    controls over privileged activity.
     """
     control = {
         "control_id": "ITGC-02",
@@ -119,8 +110,7 @@ def check_activity_log_retention(monitor_client, subscription_id: str) -> dict:
             control["status"] = "FAIL"
             control["detail"] = (
                 "No activity log alerts found. "
-                "Manual check required: Azure Portal > "
-                "Monitor > Diagnostic Settings to confirm log export."
+                "Manual check: Azure Portal > Monitor > Diagnostic Settings."
             )
             control["risk"] = "Activity logs may not be exported. Audit trail limited to 90 days."
 
@@ -130,10 +120,7 @@ def check_activity_log_retention(monitor_client, subscription_id: str) -> dict:
         control["risk"] = "Could not verify control status."
     except AttributeError:
         control["status"] = "WARN"
-        control["detail"] = (
-            "Could not verify via API (SDK version limitation). "
-            "Manual check: Azure Portal > Monitor > Diagnostic Settings."
-        )
+        control["detail"] = "Could not verify via API. Manual check: Azure Portal > Monitor > Diagnostic Settings."
 
     return control
 
@@ -144,7 +131,7 @@ def check_privileged_access(auth_client, subscription_id: str) -> dict:
     NIST CSF 2.0: PR.AC-4
 
     Identifies direct Owner and Contributor role assignments at subscription
-    scope assigned to individual user accounts (not groups or service principals).
+    scope assigned to individual user accounts.
     """
     control = {
         "control_id": "ITGC-03",
@@ -192,13 +179,15 @@ def check_privileged_access(auth_client, subscription_id: str) -> dict:
     return control
 
 
-def check_security_contacts(security_client, subscription_id: str) -> dict:
+def check_security_contacts(credential, subscription_id: str) -> dict:
     """
     ITGC-04: Security Contact / Alert Notification
     NIST CSF 2.0: PR.AC-7
 
-    Tests whether a security contact email is configured in
-    Defender for Cloud so critical alerts have a notification destination.
+    Uses a direct REST call instead of the SDK client to avoid a
+    known deserialization bug in azure-mgmt-security v7 for security contacts.
+
+    Tests whether a security contact email is configured in Defender for Cloud.
     """
     control = {
         "control_id": "ITGC-04",
@@ -210,27 +199,37 @@ def check_security_contacts(security_client, subscription_id: str) -> dict:
     }
 
     try:
-        contacts = list(
-            security_client.security_contacts.list()
-        )
+        # Use direct REST call to avoid SDK deserialization bug
+        import requests
+        token = credential.get_token("https://management.azure.com/.default").token
+        url = f"https://management.azure.com/subscriptions/{subscription_id}/providers/Microsoft.Security/securityContacts?api-version=2020-01-01-preview"
+        headers = {"Authorization": f"Bearer {token}"}
+        response = requests.get(url, headers=headers, timeout=30)
 
-        contacts_with_email = [
-            c for c in contacts
-            if getattr(c, 'email', None) and c.email.strip()
-        ]
+        if response.status_code == 200:
+            data = response.json()
+            contacts = data.get("value", [])
+            contacts_with_email = [
+                c for c in contacts
+                if c.get("properties", {}).get("email", "").strip()
+            ]
 
-        if contacts_with_email:
-            control["status"] = "PASS"
-            contact = contacts_with_email[0]
-            control["detail"] = f"Security contact configured: {contact.email}. Alert notifications: {'Enabled' if getattr(contact, 'alert_notifications', None) else 'Check manually'}."
-            control["risk"] = ""
+            if contacts_with_email:
+                email = contacts_with_email[0]["properties"]["email"]
+                control["status"] = "PASS"
+                control["detail"] = f"Security contact configured: {email}."
+                control["risk"] = ""
+            else:
+                control["status"] = "FAIL"
+                control["detail"] = "No security contact with email address found in Defender for Cloud."
         else:
-            control["status"] = "FAIL"
-            control["detail"] = "No security contact with email address found in Defender for Cloud."
+            control["status"] = "WARN"
+            control["detail"] = f"Could not retrieve security contacts (HTTP {response.status_code}). Manual verification required."
+            control["risk"] = "Security contact status unverified."
 
-    except HttpResponseError as e:
+    except Exception as e:
         control["status"] = "ERROR"
-        control["detail"] = f"API error: {e.error.code if e.error else str(e)}"
+        control["detail"] = f"Unexpected error: {str(e)[:100]}"
         control["risk"] = "Could not verify control status."
 
     return control
