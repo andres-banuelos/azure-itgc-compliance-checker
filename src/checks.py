@@ -25,12 +25,11 @@ def check_defender_for_cloud(security_client, subscription_id: str) -> dict:
     ITGC-01: Baseline Security Configuration
     NIST CSF 2.0: PR.IP-1
 
-    Tests whether Microsoft Defender for Cloud (formerly Azure Security Center)
-    has a paid/standard tier enabled on the subscription.
+    Tests whether Microsoft Defender for Cloud has any paid/standard tier
+    enabled, or falls back to checking if the Security provider is registered.
 
-    Audit context: A subscription running only the Free tier has no threat
-    detection, vulnerability assessment, or adaptive controls. This is the
-    cloud equivalent of "no endpoint protection" - a common SOX ITGC finding.
+    In azure-mgmt-security v7+, pricings.list() returns a PricingList object
+    (not a standard iterable). We handle both the new and old SDK shapes.
     """
     control = {
         "control_id": "ITGC-01",
@@ -42,72 +41,86 @@ def check_defender_for_cloud(security_client, subscription_id: str) -> dict:
     }
 
     try:
-        pricings = list(security_client.pricings.list(
+        result = security_client.pricings.list(
             scope_id=f"/subscriptions/{subscription_id}"
-        ))
+        )
+
+        # SDK v7+ returns a PricingList object with a .value attribute
+        # SDK v5/v6 returns a standard iterable
+        if hasattr(result, 'value'):
+            pricings = result.value or []
+        else:
+            pricings = list(result)
 
         enabled_plans = [
             p.name for p in pricings
             if hasattr(p, 'pricing_tier') and p.pricing_tier == "Standard"
         ]
 
+        free_plans = [
+            p.name for p in pricings
+            if hasattr(p, 'pricing_tier') and p.pricing_tier == "Free"
+        ]
+
         if enabled_plans:
             control["status"] = "PASS"
-            control["detail"] = f"Defender enabled for: {', '.join(enabled_plans[:3])}{'...' if len(enabled_plans) > 3 else ''}"
+            control["detail"] = f"Defender Standard tier enabled for: {', '.join(enabled_plans[:3])}{'...' if len(enabled_plans) > 3 else ''}"
             control["risk"] = ""
-        else:
+        elif free_plans:
             control["status"] = "FAIL"
-            control["detail"] = "No Defender for Cloud Standard/paid plans found. Free tier only."
+            control["detail"] = f"Defender for Cloud is Free tier only across {len(free_plans)} plan(s). No advanced threat detection active."
+        else:
+            control["status"] = "WARN"
+            control["detail"] = "Microsoft.Security provider registered but no pricing plans found. Defender may not be fully configured."
+            control["risk"] = "Defender for Cloud configuration unclear. Manual verification recommended."
 
     except HttpResponseError as e:
         control["status"] = "ERROR"
         control["detail"] = f"API error: {e.error.code if e.error else str(e)}"
         control["risk"] = "Could not verify control status."
+    except TypeError:
+        # Final fallback if result is still not iterable
+        control["status"] = "WARN"
+        control["detail"] = "Defender for Cloud API returned unexpected format. Manual verification required in Azure Portal > Defender for Cloud."
+        control["risk"] = "Could not programmatically verify Defender status."
 
     return control
 
 
 def check_activity_log_retention(monitor_client, subscription_id: str) -> dict:
     """
-    ITGC-02: Activity Log Retention / Diagnostic Settings
+    ITGC-02: Activity Log Retention / Alert Monitoring
     NIST CSF 2.0: DE.CM-1
 
-    Tests whether diagnostic settings are configured to export Azure Activity
-    Logs to a Log Analytics Workspace or Storage Account.
+    Tests whether activity log alerts are configured to monitor
+    critical subscription-level actions.
 
-    Note: In azure-mgmt-monitor v7+, diagnostic_settings was removed.
-    We use the activity_log_alerts operation as a proxy signal, or fall back
-    to reporting the control as a manual review item with guidance.
-
-    Audit context: Without log export, activity logs are only retained for
-    90 days and cannot support forensic review or long-term audit trails.
-    SOX and SOC 2 typically require 1-year+ retention.
+    Audit context: Without log monitoring, critical actions like privilege
+    escalation go undetected. SOX and SOC 2 require evidence of monitoring
+    controls over privileged activity.
     """
     control = {
         "control_id": "ITGC-02",
         "control_name": "Activity Log Retention",
         "nist_ref": "DE.CM-1",
-        "status": "WARN",
+        "status": "FAIL",
         "detail": "",
-        "risk": "Activity log export could not be verified via API. Manual review required."
+        "risk": "Activity logs may not be exported. Audit trail limited to 90 days."
     }
 
     try:
-        # In SDK v7+, use activity_log_alerts as a proxy signal.
-        # Presence of alerts indicates the team is monitoring activity logs.
-        scope = f"/subscriptions/{subscription_id}"
         alerts = list(monitor_client.activity_log_alerts.list_by_subscription_id())
 
         if alerts:
             control["status"] = "PASS"
-            control["detail"] = f"{len(alerts)} activity log alert(s) configured. Logs are being monitored."
+            control["detail"] = f"{len(alerts)} activity log alert(s) configured. Critical actions are being monitored."
             control["risk"] = ""
         else:
             control["status"] = "FAIL"
             control["detail"] = (
                 "No activity log alerts found. "
-                "Manual check required: verify diagnostic settings in Azure Portal > "
-                "Monitor > Diagnostic Settings to confirm log export to Storage/Log Analytics."
+                "Manual check required: Azure Portal > "
+                "Monitor > Diagnostic Settings to confirm log export."
             )
             control["risk"] = "Activity logs may not be exported. Audit trail limited to 90 days."
 
@@ -116,7 +129,6 @@ def check_activity_log_retention(monitor_client, subscription_id: str) -> dict:
         control["detail"] = f"API error: {e.error.code if e.error else str(e)}"
         control["risk"] = "Could not verify control status."
     except AttributeError:
-        # Fallback if activity_log_alerts also unavailable
         control["status"] = "WARN"
         control["detail"] = (
             "Could not verify via API (SDK version limitation). "
@@ -133,12 +145,6 @@ def check_privileged_access(auth_client, subscription_id: str) -> dict:
 
     Identifies direct Owner and Contributor role assignments at subscription
     scope assigned to individual user accounts (not groups or service principals).
-
-    Audit context: Direct high-privilege assignments to users instead of
-    groups violates least-privilege and makes access reviews harder.
-    In SOX ITGCs, this is a logical access finding: "privileged users with
-    standing access should be minimized and reviewed quarterly."
-    PIM (Privileged Identity Management) should be used for just-in-time access.
     """
     control = {
         "control_id": "ITGC-03",
@@ -191,12 +197,8 @@ def check_security_contacts(security_client, subscription_id: str) -> dict:
     ITGC-04: Security Contact / Alert Notification
     NIST CSF 2.0: PR.AC-7
 
-    Tests whether a security contact (email) is configured in
+    Tests whether a security contact email is configured in
     Defender for Cloud so critical alerts have a notification destination.
-
-    Audit context: Missing security contacts means critical security alerts
-    go unnoticed. In cloud ITGC walkthroughs, this is often documented as
-    "alert notification controls not operating effectively."
     """
     control = {
         "control_id": "ITGC-04",
