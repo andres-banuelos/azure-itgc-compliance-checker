@@ -16,7 +16,7 @@ from azure.identity import DefaultAzureCredential
 from azure.mgmt.security import SecurityCenter
 from azure.mgmt.monitor import MonitorManagementClient
 from azure.mgmt.authorization import AuthorizationManagementClient
-from azure.mgmt.resource import SubscriptionClient
+from azure.mgmt.subscription import SubscriptionClient
 
 
 def get_credential():
