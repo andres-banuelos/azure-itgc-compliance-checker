@@ -1,0 +1,47 @@
+{
+  "generated_at": "2026-05-09T19:30:00Z",
+  "subscription_name": "Azure for Students",
+  "subscription_id": "4a9147de-****-****-****-************",
+  "summary": {
+    "total": 4,
+    "pass": 2,
+    "fail": 0,
+    "warn": 2,
+    "error": 0,
+    "risk_rating": "MEDIUM"
+  },
+  "findings": [
+    {
+      "control_id": "ITGC-01",
+      "control_name": "Defender for Cloud (Baseline Security)",
+      "nist_ref": "PR.IP-1",
+      "status": "PASS",
+      "detail": "Defender Standard tier enabled for: Discovery, FoundationalCspm",
+      "risk": ""
+    },
+    {
+      "control_id": "ITGC-02",
+      "control_name": "Activity Log Retention",
+      "nist_ref": "DE.CM-1",
+      "status": "PASS",
+      "detail": "2 activity log alert(s) configured. Critical actions are being monitored.",
+      "risk": ""
+    },
+    {
+      "control_id": "ITGC-03",
+      "control_name": "Privileged Access Review",
+      "nist_ref": "PR.AC-4",
+      "status": "WARN",
+      "detail": "2 direct high-privilege assignment(s) to individual users. Review whether PIM or group-based access should be used.",
+      "risk": "Standing privileged access increases risk of unauthorized changes. Consider PIM for just-in-time access."
+    },
+    {
+      "control_id": "ITGC-04",
+      "control_name": "Security Contact Configuration",
+      "nist_ref": "PR.AC-7",
+      "status": "WARN",
+      "detail": "1 security contact entry found but no email address set. Add an email: Portal > Defender for Cloud > Environment Settings > Email notifications.",
+      "risk": "Security alerts may not reach a human responder."
+    }
+  ]
+}
