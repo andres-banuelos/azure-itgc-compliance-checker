@@ -1,0 +1,17 @@
+# Azure SDK - Authentication
+azure-identity>=1.15.0
+
+# Azure SDK - Resource Management (subscription info)
+azure-mgmt-resource>=23.0.0
+
+# Azure SDK - Security Center / Defender for Cloud
+azure-mgmt-security>=5.0.0
+
+# Azure SDK - Monitor (Activity Logs / Diagnostic Settings)
+azure-mgmt-monitor>=6.0.0
+
+# Azure SDK - Authorization (RBAC / Role Assignments)
+azure-mgmt-authorization>=3.0.0
+
+# CLI argument parsing (built-in, no install needed)
+# json, datetime, sys - all built-in
