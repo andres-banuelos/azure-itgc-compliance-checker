@@ -1,5 +1,0 @@
-{
-  "subscription_id": "4a9147de-f939-4e7f-b553-f4fffc050052",
-  "subscription_name": "Azure for Students",
-  "notes": "Copy this file to config.json and fill in your real subscription ID. Never commit config.json (it is in .gitignore)."
-}
